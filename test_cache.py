@@ -162,6 +162,58 @@ def test_dimension_validation():
         cache.query(vector=[1.0, 2.0, 3.0])
 
 
+def test_same_prompt_orthogonal_vector_misses_and_oversized_record_rejected():
+    cache = SemanticVectorCache(dim=4, similarity_threshold=0.85, max_memory_bytes=1200)
+    rec = VectorRecord(
+        id="rec_xray",
+        prompt="Describe this X-ray",
+        vector=[1.0, 0.0, 0.0, 0.0],
+        response="Normal chest radiograph.",
+    )
+    cache.put(rec)
+
+    # Same text prompt but orthogonal visual vector must not false-hit
+    match = cache.query(vector=[0.0, 1.0, 0.0, 0.0], prompt="Describe this X-ray")
+    assert match.cache_hit is False
+
+    # Oversized record (> max_memory_bytes) must raise ValueError and not evict existing records
+    oversized = VectorRecord(
+        id="rec_huge",
+        prompt="Huge",
+        vector=[1.0, 0.0, 0.0, 0.0],
+        response="X" * 2000,
+    )
+    with pytest.raises(ValueError):
+        cache.put(oversized)
+    assert "rec_xray" in cache.records
+    assert cache.current_memory_bytes <= cache.max_memory_bytes
+
+
+def test_lsh_1bit_neighbor_probe_above_200_records():
+    cache = SemanticVectorCache(dim=4, num_tables=1, num_bits=4, similarity_threshold=0.85)
+    # Populate > 200 records so linear scan fallback is disabled
+    for i in range(210):
+        cache.put(VectorRecord(id=f"fill_{i}", prompt=f"P{i}", vector=[1.0, float(i + 1), 0.0, 0.0], response="R"))
+
+    plane0 = cache.hyperplanes[0][0]
+    norm = sum(x * x for x in plane0) ** 0.5
+    u = [x / norm for x in plane0]
+    # Pick orthogonal unit vector w
+    raw_w = [-u[1], u[0], 0.0, 0.0]
+    w_norm = sum(x * x for x in raw_w) ** 0.5
+    w = [x / w_norm for x in raw_w]
+
+    # v_pos and v_neg slightly straddle plane0 (1-bit flip) while remaining >0.99 cosine similar
+    v_pos = [w[j] + 0.02 * u[j] for j in range(4)]
+    v_neg = [w[j] - 0.02 * u[j] for j in range(4)]
+
+    cache.put(VectorRecord(id="target_neighbor", prompt="Target", vector=v_pos, response="Hit"))
+    match = cache.query(vector=v_neg)
+    assert match.cache_hit is True
+    assert match.record is not None
+    assert match.record.id == "target_neighbor"
+
+
 def test_run_benchmark_end_to_end():
     sample_file = Path(__file__).parent / "sample_embeddings.json"
     metrics = run_benchmark(sample_file, similarity_threshold=0.85)

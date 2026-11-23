@@ -18,8 +18,8 @@ class VectorRecord(BaseModel):
     token_count: int = Field(default=0, ge=0)
     cost: float = Field(default=0.0, ge=0.0)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-    created_at: float = Field(default_factory=time.time)
-    last_accessed: float = Field(default_factory=time.time)
+    created_at: float = Field(default_factory=time.perf_counter)
+    last_accessed: float = Field(default_factory=time.perf_counter)
     access_count: int = Field(default=1, ge=1)
 
 

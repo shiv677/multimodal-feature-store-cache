@@ -126,6 +126,8 @@ class SemanticVectorCache:
             raise ValueError(f"Vector dimension {len(record.vector)} does not match cache dimension {self.dim}")
 
         rec_size = estimate_record_size(record)
+        if rec_size > self.max_memory_bytes:
+            raise ValueError(f"Record size {rec_size} exceeds max_memory_bytes {self.max_memory_bytes}")
 
         if record.id in self.records:
             self._remove_record(record.id)
@@ -133,7 +135,9 @@ class SemanticVectorCache:
         while (self.current_memory_bytes + rec_size > self.max_memory_bytes) and self.records:
             self._evict_victim()
 
-        record.last_accessed = time.perf_counter()
+        now = time.perf_counter()
+        record.created_at = now
+        record.last_accessed = now
         self.records[record.id] = record
         self.record_sizes[record.id] = rec_size
         self.current_memory_bytes += rec_size
@@ -158,44 +162,68 @@ class SemanticVectorCache:
             record = self.records.get(rec_id)
             if record:
                 sim = cosine_similarity(vector, record.vector)
-                record.last_accessed = time.perf_counter()
-                record.access_count += 1
+                if sim >= self.similarity_threshold:
+                    record.last_accessed = time.perf_counter()
+                    record.access_count += 1
 
-                self.cache_hits += 1
-                self.saved_tokens += record.token_count
-                saved_cost = record.cost if record.cost > 0.0 else record.token_count * self.cost_per_token
-                self.estimated_cost_saved += saved_cost
+                    self.cache_hits += 1
+                    self.saved_tokens += record.token_count
+                    saved_cost = record.cost if record.cost > 0.0 else record.token_count * self.cost_per_token
+                    self.estimated_cost_saved += saved_cost
 
-                latency_ms = (time.perf_counter() - start_time) * 1000.0
-                return QueryMatch(
-                    record=record,
-                    similarity=sim,
-                    cache_hit=True,
-                    lookup_latency_ms=latency_ms,
-                    match_type="EXACT",
-                )
+                    latency_ms = (time.perf_counter() - start_time) * 1000.0
+                    return QueryMatch(
+                        record=record,
+                        similarity=sim,
+                        cache_hit=True,
+                        lookup_latency_ms=latency_ms,
+                        match_type="EXACT",
+                    )
 
         # LSH Candidate Retrieval
         candidates: Set[str] = set()
+        table_keys: List[int] = []
         for table_idx in range(self.num_tables):
             key = self._hash_vector(table_idx, vector)
+            table_keys.append(key)
             candidates.update(self.tables[table_idx].get(key, ()))
 
-        # Fallback to linear scan if candidate pool is empty and cache is small
-        if not candidates and len(self.records) <= 200:
-            candidates = set(self.records.keys())
+        def _find_best(cand_ids: Set[str]) -> Tuple[float, Optional[VectorRecord]]:
+            b_sim = -1.0
+            b_rec: Optional[VectorRecord] = None
+            for cand_id in cand_ids:
+                rec = self.records.get(cand_id)
+                if rec is None:
+                    continue
+                sim = cosine_similarity(vector, rec.vector)
+                if sim > b_sim:
+                    b_sim = sim
+                    b_rec = rec
+            return b_sim, b_rec
 
-        best_sim = -1.0
-        best_record: Optional[VectorRecord] = None
+        best_sim, best_record = _find_best(candidates)
 
-        for cand_id in candidates:
-            rec = self.records.get(cand_id)
-            if rec is None:
-                continue
-            sim = cosine_similarity(vector, rec.vector)
-            if sim > best_sim:
-                best_sim = sim
-                best_record = rec
+        # Probe 1-bit Hamming neighbor buckets if no match above similarity_threshold
+        if best_sim < self.similarity_threshold:
+            neighbor_candidates: Set[str] = set()
+            for table_idx, key in enumerate(table_keys):
+                table = self.tables[table_idx]
+                for bit in range(self.num_bits):
+                    neighbor_candidates.update(table.get(key ^ (1 << bit), ()))
+            neighbor_candidates -= candidates
+            if neighbor_candidates:
+                n_sim, n_rec = _find_best(neighbor_candidates)
+                if n_sim > best_sim:
+                    best_sim, best_record = n_sim, n_rec
+                candidates |= neighbor_candidates
+
+        # Fallback to linear scan if no match found and cache is small
+        if best_sim < self.similarity_threshold and len(self.records) <= 200:
+            rem = set(self.records.keys()) - candidates
+            if rem:
+                f_sim, f_rec = _find_best(rem)
+                if f_sim > best_sim:
+                    best_sim, best_record = f_sim, f_rec
 
         latency_ms = (time.perf_counter() - start_time) * 1000.0
 

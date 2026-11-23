@@ -46,7 +46,7 @@ Defined using **Pydantic v2**:
 Run the benchmark runner with the included synthetic dataset:
 
 ```bash
-python projects/multimodal_feature_store_cache/main.py --threshold 0.88 --tables 4 --bits 6
+python main.py --threshold 0.88 --tables 4 --bits 6
 ```
 
 Options:
@@ -61,5 +61,5 @@ Options:
 Run pytest to verify functionality:
 
 ```bash
-python -m pytest projects/multimodal_feature_store_cache/test_cache.py -v
+python -m pytest test_cache.py -v
 ```
