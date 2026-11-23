@@ -1,7 +1,15 @@
 """Multimodal Feature Store & Semantic Vector Cache."""
 try:
-    from .models import CacheConfig, CacheEntry, CacheStats
-    from .cache import MultimodalFeatureStoreCache
+    from .models import VectorRecord, QueryMatch, CacheMetrics, EvictionPolicy
+    from .cache import SemanticVectorCache
 except (ImportError, ValueError):
-    from models import CacheConfig, CacheEntry, CacheStats
-    from cache import MultimodalFeatureStoreCache
+    from models import VectorRecord, QueryMatch, CacheMetrics, EvictionPolicy
+    from cache import SemanticVectorCache
+
+__all__ = [
+    "VectorRecord",
+    "QueryMatch",
+    "CacheMetrics",
+    "EvictionPolicy",
+    "SemanticVectorCache",
+]
